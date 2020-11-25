@@ -8,7 +8,7 @@ const HEIGHT = 30;
 // translate game board size to pixels
 const SCALE = 20;
 
-const GAME_DELAY_MS = 400;
+const GAME_DELAY_MS = 200;
 
 
 // One-time setup to HTML canvas element: make it the right size (given settings
@@ -152,9 +152,21 @@ class Snake {
     //don't include index 0 of the 'parts' array since head coordinates will always
     //equal parts[0] coordinates
     return this.parts.slice(1).some(function (me) {
-      return me.x === head.x && me.y === head.y 
+      return me.x === head.x && me.y === head.y
     });
   }
+
+  /** Did the snake head crash into another snake? t/f */
+
+  checkCrashIntoOther(otherSnake) {
+    let head = this.head();
+
+    //checks if head of this snake touches the body of other snake
+    return otherSnake.parts.some(function (other) {
+      return other.x === head.x && other.y === head.y
+    });
+  }
+
 
   /** Move snake one move in its current direction. */
 
@@ -169,6 +181,8 @@ class Snake {
     if (this.dir === "up") pt = new Point(x, y - 1);
     if (this.dir === "down") pt = new Point(x, y + 1);
     this.parts.unshift(pt);
+
+    // console.log(this.dir);
 
     // If we're not growing (didn't recently eat a pellet), remove the tail of
     // the snake body, so it moves and doesn't grow. If we're growing, decrement
@@ -197,7 +211,7 @@ class Snake {
     if (currDir === "down" && dir === "up") return;
     if (currDir === "left" && dir === "right") return;
     if (currDir === "right" && dir === "left") return;
-    
+
     this.nextDir = dir;
   }
 
@@ -213,12 +227,90 @@ class Snake {
     const head = this.head();
     const pellet = food.find(f => f.pt.x === head.x && f.pt.y === head.y);
     // console.log("eats pellet=", pellet);
-    
+
     if (pellet) this.growBy += 2;
     return pellet;
   }
 }
 
+
+/** Bored Snake. Subclass of Snake parent class. Randomly changes
+ * direction of snake if moving in same direction 8 times in a row.
+ *
+ * @param color - CSS color of this snake
+ * @param keymap - mapping of keys to directions, eg
+ *    { w: "up", a: "left", s: "right", z: "down" }
+ * @param start - starting Point for snake
+ * @param dir - direction snake moves: "up", "left", "right", "down"
+ *
+ **/
+
+class BoredSnake extends Snake {
+  constructor(keymap, start, dir, color) {
+    super(keymap, start, dir, color);
+    this.storedMoves = [];
+  }
+
+  /**Checks if snake has been moving in same direction 8 times in a row. Returns a random direction
+   * if so. Otherwise, return current direction.
+   */
+  checkDir(nextDir) {
+
+    if (this.storedMoves[this.storedMoves.length - 1] === nextDir) {
+      this.storedMoves.push(nextDir);
+    } else {
+      this.storedMoves = [nextDir];
+    }
+
+    if (this.storedMoves.length >= 8) {
+      nextDir = this.randomDir(nextDir);
+      this.nextDir = nextDir;
+      this.storedMoves = [nextDir];
+    } 
+   
+    return nextDir;
+  }
+
+  /**Returns a legal random direction based on the direction the snake
+   * is currently moving.
+   */
+  randomDir(dir) {
+    const dirChoices = {
+      "up" : ["left", "right"],
+      "down": ["left", "right"],
+      "right": ["up", "down"],
+      "left": ["up", "down"]
+    };
+    
+    const randomIdx = Math.round(Math.random()); //0 or 1
+    
+    return dirChoices[dir][randomIdx];
+  }
+
+  /** Move snake one move in its current direction. */
+
+  move() {
+    const { x, y } = this.head();
+
+    // Calculate where the new head will be, and add that point to front of body
+    let pt;
+    this.dir = this.checkDir(this.nextDir);
+    console.log(this.dir);
+    if (this.dir === "left") pt = new Point(x - 1, y);
+    if (this.dir === "right") pt = new Point(x + 1, y);
+    if (this.dir === "up") pt = new Point(x, y - 1);
+    if (this.dir === "down") pt = new Point(x, y + 1);
+    this.parts.unshift(pt);
+
+    // console.log(this.dir);
+
+    // If we're not growing (didn't recently eat a pellet), remove the tail of
+    // the snake body, so it moves and doesn't grow. If we're growing, decrement
+    // growth so we're closer to not-growing-any-more.
+    if (this.growBy === 0) this.parts.pop();
+    else this.growBy--;
+  }
+}
 
 /** Random Snake. Subclass of Snake parent class. Adds random number (1-5) 
  * of parts when eats a pellet.
@@ -236,16 +328,21 @@ class RandomSnake extends Snake {
     super(keymap, start, dir, color);
   }
 
+  /**Grows the snake by a random integer from 1-5 if it eats a pellet
+   * Returns the pellet;
+   */
   eats(food) {
     const head = this.head();
     const pellet = food.find(f => f.pt.x === head.x && f.pt.y === head.y);
-    
+
     if (pellet) this.growBy += Math.floor(Math.random() * 5 + 1);
 
     return pellet;
   }
 
 }
+
+
 
 /** Overall game.
  *
@@ -254,8 +351,9 @@ class RandomSnake extends Snake {
  */
 
 class Game {
-  constructor(snake, numFood = 3) {
-    this.snake = snake;
+  constructor(snakes, numFood = 3) {
+    // this.snake = snake;
+    this.snakes = snakes;
 
     // array of Pellet instances on board
     this.food = [];
@@ -280,20 +378,28 @@ class Game {
   refillFood() {
     while (this.food.length < this.numFood) {
       let foodPellet = Pellet.newRandom();
-      
-      //checks if randomly created food pellet is on a snake body part coordinate
-      let isSnakeCoord = this.snake.parts.some(function(part) {
-        return part.x === foodPellet.pt.x && part.y === foodPellet.pt.y;
-      });
 
-      if (!isSnakeCoord) this.food.push(foodPellet);
+      let inSnakes = false;
+
+      //checks if randomly created food pellet is on one of the snakes
+      for (let snake of this.snakes) {
+        let isSnakeCoord = snake.parts.some(function (part) {
+          return part.x === foodPellet.pt.x && part.y === foodPellet.pt.y;
+        });
+
+        if (isSnakeCoord) inSnakes = true;
+      }
+
+      if (!inSnakes) this.food.push(foodPellet);
     }
   }
 
   /** Let snake try to handle the keystroke. */
 
   keyListener(evt) {
-    this.snake.handleKey(evt.key);
+    for (let snake of this.snakes) {
+      snake.handleKey(evt.key);
+    }
   }
 
   /** Remove Pellet from board. */
@@ -314,7 +420,18 @@ class Game {
   tick() {
     console.log("tick");
 
-    const isDead = this.snake.checkCrashIntoWall() || this.snake.checkCrashIntoSelf();
+
+    //checks three conditions for each snake in game array
+    //- did current snake crash into wall?
+    //- did current snake crash into itself?
+    //- did current snake crash into any other snake(s)?
+    const isDead = this.snakes.some(
+      currSnake => {
+        return currSnake.checkCrashIntoWall() ||
+          currSnake.checkCrashIntoSelf() ||
+          this.snakes.filter(snake => snake !== currSnake)
+            .some(otherSnake => currSnake.checkCrashIntoOther(otherSnake));
+      });
 
     if (isDead) {
       window.clearInterval(this.timerId);
@@ -327,11 +444,13 @@ class Game {
       f.draw();
     }
 
-    this.snake.move();
-    this.snake.draw();
+    for (let snake of this.snakes) {
+      snake.move();
+      snake.draw();
 
-    const pellet = this.snake.eats(this.food);
-    if (pellet) this.removeFood(pellet);
+      const pellet = snake.eats(this.food);
+      if (pellet) this.removeFood(pellet);
+    }
 
     this.refillFood();
   }
@@ -346,28 +465,36 @@ const snake1 = new Snake(
   },
   new Point(20, 20),
   "right",
-  "blue"
+  "yellow"
 );
 
 const snake2 = new Snake(
   {
-    w: "up", a: "left", s: "right", z: "down",
+    w: "up", a: "left", d: "right", s: "down",
   },
   new Point(10, 10),
   "right",
-  "green"
+  "orange"
 );
 
 const snake3 = new RandomSnake(
   {
-    ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
+    w: "up", a: "left", d: "right", s: "down",
   },
-  new Point(20, 20),
+  new Point(20, 10),
   "right",
   "blue"
 );
 
+const snake4 = new BoredSnake(
+  {
+    ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
+  },
+  new Point(10, 20),
+  "right",
+  "purple"
+);
 
-// const game = new Game(snake1);
-const game = new Game(snake3);
+const game = new Game([snake3, snake4]);
+// const game = new Game([snake1, snake2]);
 game.start();
